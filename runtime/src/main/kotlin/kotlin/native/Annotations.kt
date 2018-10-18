@@ -48,7 +48,7 @@ public annotation class Throws(vararg val exceptionClasses: KClass<out Throwable
  */
 @Target(AnnotationTarget.PROPERTY, AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.BINARY)
-public annotation class ThreadLocal
+public actual annotation class ThreadLocal
 
 /**
  * Top level variable is immutable and so could be shared.
@@ -56,7 +56,7 @@ public annotation class ThreadLocal
  */
 @Target(AnnotationTarget.PROPERTY)
 @Retention(AnnotationRetention.BINARY)
-public annotation class SharedImmutable
+public actual annotation class SharedImmutable
 
 /**
  * Makes top level function available from C/C++ code with the given name.
