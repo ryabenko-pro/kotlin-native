@@ -51,19 +51,22 @@ class KonanDescriptorSerializer private constructor(
         private val typeTable: MutableTypeTable,
         private val versionRequirementTable: MutableVersionRequirementTable,
         private val serializeTypeTableToFunction: Boolean
-) {
+): DescriptorSerializer(
+        containingDeclaration = containingDeclaration,
+        typeParameters = typeParameters,
+        extension = extension,
+        typeTable = typeTable,
+        versionRequirementTable = versionRequirementTable,
+        serializeTypeTableToFunction = serializeTypeTableToFunction) {
     private val contractSerializer = ContractSerializer()
 
     fun createChildSerializer(descriptor: DeclarationDescriptor): KonanDescriptorSerializer =
             KonanDescriptorSerializer(context, descriptor, Interner(typeParameters), extension, typeTable, versionRequirementTable,
                                  serializeTypeTableToFunction = false)
 
-    val stringTable: DescriptorAwareStringTable
-        get() = extension.stringTable
-
     private fun useTypeTable(): Boolean = extension.shouldUseTypeTable()
 
-    fun classProto(classDescriptor: ClassDescriptor): ProtoBuf.Class.Builder {
+    override fun classProto(classDescriptor: ClassDescriptor): ProtoBuf.Class.Builder {
         val builder = ProtoBuf.Class.newBuilder()
 
         val flags = Flags.getClassFlags(
@@ -160,7 +163,7 @@ class KonanDescriptorSerializer private constructor(
         return builder
     }
 
-    fun propertyProto(descriptor: PropertyDescriptor): ProtoBuf.Property.Builder {
+    override fun propertyProto(descriptor: PropertyDescriptor): ProtoBuf.Property.Builder {
         val builder = ProtoBuf.Property.newBuilder()
 
         val local = createChildSerializer(descriptor)
@@ -268,7 +271,7 @@ class KonanDescriptorSerializer private constructor(
             else
                 descriptor.visibility
 
-    fun functionProto(descriptor: FunctionDescriptor): ProtoBuf.Function.Builder {
+    override fun functionProto(descriptor: FunctionDescriptor): ProtoBuf.Function.Builder {
         val builder = ProtoBuf.Function.newBuilder()
 
         val local = createChildSerializer(descriptor)
@@ -325,14 +328,7 @@ class KonanDescriptorSerializer private constructor(
             builder.addVersionRequirement(writeVersionRequirementDependingOnCoroutinesVersion())
         }
 
-        val descriptorSerializer = DescriptorSerializer(
-                containingDeclaration = containingDeclaration,
-                typeParameters = typeParameters,
-                extension = extension,
-                typeTable = typeTable,
-                versionRequirementTable = versionRequirementTable,
-                serializeTypeTableToFunction = serializeTypeTableToFunction)
-        contractSerializer.serializeContractOfFunctionIfAny(descriptor, builder, descriptorSerializer)
+        contractSerializer.serializeContractOfFunctionIfAny(descriptor, builder, this)
 
         extension.serializeFunction(descriptor, builder)
 
@@ -345,7 +341,7 @@ class KonanDescriptorSerializer private constructor(
         return builder
     }
 
-    fun constructorProto(descriptor: ConstructorDescriptor): ProtoBuf.Constructor.Builder {
+    override fun constructorProto(descriptor: ConstructorDescriptor): ProtoBuf.Constructor.Builder {
         val builder = ProtoBuf.Constructor.newBuilder()
 
         val local = createChildSerializer(descriptor)
@@ -388,7 +384,7 @@ class KonanDescriptorSerializer private constructor(
         ).any { type -> type.contains(UnwrappedType::isSuspendFunctionType) }
     }
 
-    fun typeAliasProto(descriptor: TypeAliasDescriptor): ProtoBuf.TypeAlias.Builder {
+    override fun typeAliasProto(descriptor: TypeAliasDescriptor): ProtoBuf.TypeAlias.Builder {
         val builder = ProtoBuf.TypeAlias.newBuilder()
         val local = createChildSerializer(descriptor)
 
@@ -426,7 +422,7 @@ class KonanDescriptorSerializer private constructor(
         return builder
     }
 
-    fun enumEntryProto(descriptor: ClassDescriptor): ProtoBuf.EnumEntry.Builder {
+    override fun enumEntryProto(descriptor: ClassDescriptor): ProtoBuf.EnumEntry.Builder {
         val builder = ProtoBuf.EnumEntry.newBuilder()
         builder.name = getSimpleNameIndex(descriptor.name)
         extension.serializeEnumEntry(descriptor, builder)
@@ -500,9 +496,6 @@ class KonanDescriptorSerializer private constructor(
 
         return builder
     }
-
-    /* Konan needs public modifier */
-    fun typeId(type: KotlinType) = typeTable[type(type)]
 
     internal fun type(type: KotlinType): ProtoBuf.Type.Builder {
         val builder = ProtoBuf.Type.newBuilder()
@@ -618,7 +611,7 @@ class KonanDescriptorSerializer private constructor(
         return builder
     }
 
-    fun packagePartProto(packageFqName: FqName, members: Collection<DeclarationDescriptor>): ProtoBuf.Package.Builder {
+    override fun packagePartProto(packageFqName: FqName, members: Collection<DeclarationDescriptor>): ProtoBuf.Package.Builder {
         val builder = ProtoBuf.Package.newBuilder()
 
         for (declaration in members) {
