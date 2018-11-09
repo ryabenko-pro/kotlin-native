@@ -21,6 +21,7 @@ import org.jetbrains.kotlin.ir.expressions.impl.IrGetValueImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrSetFieldImpl
 import org.jetbrains.kotlin.ir.symbols.IrConstructorSymbol
 import org.jetbrains.kotlin.ir.symbols.IrFieldSymbol
+import org.jetbrains.kotlin.ir.util.patchDeclarationParents
 import org.jetbrains.kotlin.ir.util.transformFlat
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
 import org.jetbrains.kotlin.resolve.scopes.receivers.ImplicitClassReceiver
@@ -84,8 +85,7 @@ internal class InnerClassLowering(val context: Context) : ClassLoweringPass {
                 override fun visitGetValue(expression: IrGetValue): IrExpression {
                     expression.transformChildrenVoid(this)
 
-                    val implicitThisClass = expression.descriptor.getClassDescriptorForImplicitThis() ?:
-                            return expression
+                    val implicitThisClass = (expression.symbol.owner.parent as? IrClass)?.descriptor ?: return expression
 
                     if (implicitThisClass == classDescriptor) return expression
 
@@ -140,16 +140,6 @@ internal class InnerClassLowering(val context: Context) : ClassLoweringPass {
                     return irThis
                 }
             })
-        }
-
-        private fun ValueDescriptor.getClassDescriptorForImplicitThis(): ClassDescriptor? {
-            if (this is ReceiverParameterDescriptor) {
-                val receiverValue = value
-                if (receiverValue is ImplicitClassReceiver) {
-                    return receiverValue.classDescriptor
-                }
-            }
-            return null
         }
     }
 }

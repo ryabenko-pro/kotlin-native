@@ -6,9 +6,7 @@
 package org.jetbrains.kotlin.ir.util
 
 import org.jetbrains.kotlin.backend.common.CommonBackendContext
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedPropertyDescriptor
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
-import org.jetbrains.kotlin.backend.common.descriptors.substitute
+import org.jetbrains.kotlin.backend.common.descriptors.*
 import org.jetbrains.kotlin.backend.common.ir.copyParameterDeclarationsFrom
 import org.jetbrains.kotlin.backend.konan.KonanBackendContext
 import org.jetbrains.kotlin.backend.konan.KonanCompilationException
@@ -35,7 +33,9 @@ import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.IrTypeParameterSymbol
+import org.jetbrains.kotlin.ir.symbols.impl.IrFieldSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
+import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
 import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.ir.types.impl.IrSimpleTypeImpl
 import org.jetbrains.kotlin.ir.types.impl.IrStarProjectionImpl
@@ -244,33 +244,71 @@ fun IrClass.simpleFunctions(): List<IrSimpleFunction> = this.declarations.flatMa
 }
 
 fun IrClass.createParameterDeclarations() {
-    thisReceiver = IrValueParameterImpl(
-            startOffset, endOffset,
-            IrDeclarationOrigin.INSTANCE_RECEIVER,
-            descriptor.thisAsReceiverParameter,
-            this.symbol.typeWith(this.typeParameters.map { it.defaultType }),
-            null
-    ).also { valueParameter ->
-        valueParameter.parent = this
-    }
+    if (descriptor !is WrappedClassDescriptor) {
+        thisReceiver = IrValueParameterImpl(
+                startOffset, endOffset,
+                IrDeclarationOrigin.INSTANCE_RECEIVER,
+                descriptor.thisAsReceiverParameter,
+                this.symbol.typeWith(this.typeParameters.map { it.defaultType }),
+                null
+        ).also { valueParameter ->
+            valueParameter.parent = this
+        }
 
-    assert(typeParameters.isEmpty())
-    assert(descriptor.declaredTypeParameters.isEmpty())
+        assert(typeParameters.isEmpty())
+        assert(descriptor.declaredTypeParameters.isEmpty())
+    } else {
+        thisReceiver = WrappedReceiverParameterDescriptor().let {
+            IrValueParameterImpl(
+                    startOffset, endOffset,
+                    IrDeclarationOrigin.INSTANCE_RECEIVER,
+                    IrValueParameterSymbolImpl(it),
+                    Name.special("<this>"),
+                    0,
+                    this.symbol.typeWith(this.typeParameters.map { it.defaultType }),
+                    null,
+                    false,
+                    false
+            ).apply {
+                it.bind(this)
+            }
+        }
+    }
 }
 
-fun IrFunction.createDispatchReceiverParameter() {
+fun IrFunction.createDispatchReceiverParameter(origin: IrDeclarationOrigin? = null) {
     assert(this.dispatchReceiverParameter == null)
 
-    val descriptor = this.descriptor.dispatchReceiverParameter ?: return
+    // TODO: remove.
+    if (descriptor !is WrappedSimpleFunctionDescriptor && descriptor !is WrappedClassConstructorDescriptor) {
+        val descriptor = this.descriptor.dispatchReceiverParameter ?: return
 
-    this.dispatchReceiverParameter = IrValueParameterImpl(
-            startOffset,
-            endOffset,
-            IrDeclarationOrigin.DEFINED,
-            descriptor,
-            (parent as IrClass).defaultType,
-            null
-    ).also { it.parent = this }
+        this.dispatchReceiverParameter = IrValueParameterImpl(
+                startOffset,
+                endOffset,
+                IrDeclarationOrigin.DEFINED,
+                descriptor,
+                (parent as IrClass).defaultType,
+                null
+        ).also { it.parent = this }
+        return
+    }
+
+    val parentAsClass = parent as? IrClass ?: return
+    val descriptor = WrappedReceiverParameterDescriptor()
+    dispatchReceiverParameter = IrValueParameterImpl(
+            startOffset, endOffset,
+            origin ?: parentAsClass.origin,
+            IrValueParameterSymbolImpl(descriptor),
+            Name.special("<this>"),
+            0,
+            parentAsClass.defaultType,
+            null,
+            false,
+            false
+    ).apply {
+        descriptor.bind(this)
+    }
 }
 
 fun IrClass.createParameterDeclarations(symbolTable: SymbolTable) {
@@ -731,6 +769,33 @@ fun createField(
         name: Name,
         isMutable: Boolean,
         origin: IrDeclarationOrigin,
+        owner: IrClass
+): IrField {
+    val descriptor = WrappedFieldDescriptor()
+    return IrFieldImpl(
+            startOffset, endOffset,
+            origin,
+            IrFieldSymbolImpl(descriptor),
+            name,
+            type,
+            Visibilities.PRIVATE,
+            !isMutable,
+            false,
+            false
+    ).apply {
+        descriptor.bind(this)
+        owner.declarations += this
+        parent = owner
+    }
+}
+
+fun createField(
+        startOffset: Int,
+        endOffset: Int,
+        type: IrType,
+        name: Name,
+        isMutable: Boolean,
+        origin: IrDeclarationOrigin,
         owner: ClassDescriptor
 ): IrField {
     val descriptor = PropertyDescriptorImpl.create(
@@ -745,7 +810,7 @@ fun createField(
             /* lateInit              = */ false,
             /* isConst               = */ false,
             /* isExpect              = */ false,
-            /* isActual                = */ false,
+            /* isActual              = */ false,
             /* isExternal            = */ false,
             /* isDelegated           = */ false
     ).apply {

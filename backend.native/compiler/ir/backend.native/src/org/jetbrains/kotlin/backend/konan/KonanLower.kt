@@ -135,6 +135,8 @@ internal class KonanLower(val context: Context, val parentPhaser: PhaseManager) 
             BuiltinOperatorLowering(context).lower(irFile)
         }
         phaser.phase(KonanPhase.LOWER_INNER_CLASSES) {
+            // TODO: Remove as soon as parents are fixed in IR.
+            irFile.patchDeclarationParents()
             InnerClassLowering(context).runOnFilePostfix(irFile)
         }
         phaser.phase(KonanPhase.LOWER_INTEROP_PART2) {
