@@ -9,25 +9,20 @@ import org.jetbrains.kotlin.backend.common.onlyIf
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.needsSerializedIr
 import org.jetbrains.kotlin.backend.konan.serialization.IrAwareExtension
-import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.metadata.ProtoBuf
-import org.jetbrains.kotlin.metadata.deserialization.Flags
 import org.jetbrains.kotlin.metadata.serialization.Interner
 import org.jetbrains.kotlin.metadata.serialization.MutableTypeTable
 import org.jetbrains.kotlin.metadata.serialization.MutableVersionRequirementTable
-import org.jetbrains.kotlin.resolve.DescriptorUtils
-import org.jetbrains.kotlin.resolve.DescriptorUtils.isEnumEntry
-import org.jetbrains.kotlin.serialization.deserialization.ProtoEnumFlags
 
 class KonanDescriptorSerializer private constructor(
         private val context: Context,
-        private val containingDeclaration: DeclarationDescriptor?,
-        private val typeParameters: Interner<TypeParameterDescriptor>,
-        private val extension: SerializerExtension,
-        private val typeTable: MutableTypeTable,
-        private val versionRequirementTable: MutableVersionRequirementTable,
-        private val serializeTypeTableToFunction: Boolean
+        containingDeclaration: DeclarationDescriptor?,
+        typeParameters: Interner<TypeParameterDescriptor>,
+        extension: SerializerExtension,
+        typeTable: MutableTypeTable,
+        versionRequirementTable: MutableVersionRequirementTable,
+        serializeTypeTableToFunction: Boolean
 ): DescriptorSerializer(
         containingDeclaration = containingDeclaration,
         typeParameters = typeParameters,
@@ -36,121 +31,64 @@ class KonanDescriptorSerializer private constructor(
         versionRequirementTable = versionRequirementTable,
         serializeTypeTableToFunction = serializeTypeTableToFunction) {
 
-    override fun createChildSerializer(descriptor: DeclarationDescriptor): KonanDescriptorSerializer =
-            KonanDescriptorSerializer(context, descriptor, Interner(typeParameters), extension, typeTable, versionRequirementTable,
-                                 serializeTypeTableToFunction = false)
+    /*
+     * Most of *Proto operations require a local child serializer to be created and modified (typeTable).
+     * These modification do not appear in parent serializer while it's necessary to have them for the
+     * serialization of inline bodies.
+     */
+    private var cachedChildSerializer = this
 
-    override fun classProto(classDescriptor: ClassDescriptor): ProtoBuf.Class.Builder {
-        val builder = super.classProto(classDescriptor)
-
-        context.ir.classesDelegatedBackingFields[classDescriptor]?.forEach {
-            builder.addProperty(propertyProto(it))
-        }
-
-        return builder
+    override fun createChildSerializer(descriptor: DeclarationDescriptor): KonanDescriptorSerializer {
+        cachedChildSerializer =
+                KonanDescriptorSerializer(context, descriptor, Interner(typeParameters), extension, typeTable, versionRequirementTable,
+                serializeTypeTableToFunction = false)
+        return cachedChildSerializer
     }
-
-    override fun propertyProto(descriptor: PropertyDescriptor): ProtoBuf.Property.Builder {
-        val builder = super.propertyProto(descriptor)
-        val local = createChildSerializer(descriptor)
-
-        /* Konan specific chunk */
-        if (extension is IrAwareExtension) {
-            descriptor.getter?.onlyIf({needsSerializedIr}) {
-                extension.addGetterIR(builder,
-                    extension.serializeInlineBody(it, local))
+    override fun classProto(classDescriptor: ClassDescriptor): ProtoBuf.Class.Builder =
+            super.classProto(classDescriptor).also { builder ->
+                /* Konan specific chunk */
+                context.ir.classesDelegatedBackingFields[classDescriptor]?.forEach {
+                    builder.addProperty(propertyProto(it))
+                }
+                // Invocation of the propertyProto above can add more types
+                // to the type table that should also be serialized.
+                typeTable.serialize()?.let { builder.mergeTypeTable(it) }
             }
-            descriptor.setter?.onlyIf({needsSerializedIr}) {
-                extension.addSetterIR(builder,
-                    extension.serializeInlineBody(it, local))
+
+    override fun propertyProto(descriptor: PropertyDescriptor): ProtoBuf.Property.Builder =
+            super.propertyProto(descriptor).also { builder ->
+                val local = cachedChildSerializer
+
+                /* Konan specific chunk */
+                if (extension is IrAwareExtension) {
+                    descriptor.getter?.onlyIf({ needsSerializedIr }) {
+                        extension.addGetterIR(builder,
+                                extension.serializeInlineBody(it, local))
+                    }
+                    descriptor.setter?.onlyIf({ needsSerializedIr }) {
+                        extension.addSetterIR(builder,
+                                extension.serializeInlineBody(it, local))
+                    }
+                }
             }
-        }
 
-        return builder
-    }
-
-    override fun functionProto(descriptor: FunctionDescriptor): ProtoBuf.Function.Builder {
-        val builder = ProtoBuf.Function.newBuilder()
-
-        val local = createChildSerializer(descriptor)
-
-        val flags = Flags.getFunctionFlags(
-            hasAnnotations(descriptor),
-            ProtoEnumFlags.visibility(normalizeVisibility(descriptor)),
-            ProtoEnumFlags.modality(descriptor.modality),
-            ProtoEnumFlags.memberKind(descriptor.kind),
-            descriptor.isOperator, descriptor.isInfix, descriptor.isInline, descriptor.isTailrec, descriptor.isExternal,
-            descriptor.isSuspend, descriptor.isExpect
-        )
-        if (flags != builder.flags) {
-            builder.flags = flags
-        }
-
-        builder.name = getSimpleNameIndex(descriptor.name)
-
-        if (useTypeTable()) {
-            builder.returnTypeId = local.typeId(descriptor.returnType!!)
-        }
-        else {
-            builder.setReturnType(local.type(descriptor.returnType!!))
-        }
-
-        for (typeParameterDescriptor in descriptor.typeParameters) {
-            builder.addTypeParameter(local.typeParameter(typeParameterDescriptor))
-        }
-
-        val receiverParameter = descriptor.extensionReceiverParameter
-        if (receiverParameter != null) {
-            if (useTypeTable()) {
-                builder.receiverTypeId = local.typeId(receiverParameter.type)
+    override fun functionProto(descriptor: FunctionDescriptor): ProtoBuf.Function.Builder =
+            super.functionProto(descriptor).also { builder ->
+                /* Konan specific chunk */
+                if (extension is IrAwareExtension && descriptor.needsSerializedIr) {
+                    extension.addFunctionIR(builder,
+                            extension.serializeInlineBody(descriptor, cachedChildSerializer))
+                }
             }
-            else {
-                builder.setReceiverType(local.type(receiverParameter.type))
+
+    override fun constructorProto(descriptor: ConstructorDescriptor): ProtoBuf.Constructor.Builder =
+            super.constructorProto(descriptor).also { builder ->
+                /* Konan specific chunk */
+                if (extension is IrAwareExtension && descriptor.needsSerializedIr) {
+                    extension.addConstructorIR(builder,
+                            extension.serializeInlineBody(descriptor, cachedChildSerializer))
+                }
             }
-        }
-
-        for (valueParameterDescriptor in descriptor.valueParameters) {
-            builder.addValueParameter(local.valueParameter(valueParameterDescriptor))
-        }
-
-        if (serializeTypeTableToFunction) {
-            val typeTableProto = typeTable.serialize()
-            if (typeTableProto != null) {
-                builder.typeTable = typeTableProto
-            }
-        }
-
-        builder.addAllVersionRequirement(serializeVersionRequirements(descriptor))
-
-        if (descriptor.isSuspendOrHasSuspendTypesInSignature()) {
-            builder.addVersionRequirement(writeVersionRequirementDependingOnCoroutinesVersion())
-        }
-
-        contractSerializer.serializeContractOfFunctionIfAny(descriptor, builder, this)
-
-        extension.serializeFunction(descriptor, builder)
-
-        /* Konan specific chunk */
-        if (extension is IrAwareExtension && descriptor.needsSerializedIr) {
-            extension.addFunctionIR(builder,
-                    extension.serializeInlineBody(descriptor, local))
-        }
-
-        return builder
-    }
-
-    override fun constructorProto(descriptor: ConstructorDescriptor): ProtoBuf.Constructor.Builder {
-        val builder = super.constructorProto(descriptor)
-        val local = createChildSerializer(descriptor)
-
-        /* Konan specific chunk */
-        if (extension is IrAwareExtension && descriptor.needsSerializedIr) {
-            extension.addConstructorIR(builder, 
-                extension.serializeInlineBody(descriptor, local))
-        }
-
-        return builder
-    }
 
     companion object {
         @JvmStatic
