@@ -8,6 +8,7 @@ package org.jetbrains.kotlin.backend.konan.lower
 import org.jetbrains.kotlin.backend.common.FileLoweringPass
 import org.jetbrains.kotlin.backend.common.IrElementTransformerVoidWithContext
 import org.jetbrains.kotlin.backend.common.descriptors.*
+import org.jetbrains.kotlin.backend.common.ir.copy
 import org.jetbrains.kotlin.backend.common.lower.*
 import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
@@ -227,22 +228,6 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
             return BuiltFunctionReference(functionReferenceClass, constructor)
         }
 
-        private fun IrValueParameter.copy(newIndex: Int) = WrappedValueParameterDescriptor().let {
-            IrValueParameterImpl(
-                    startOffset, endOffset,
-                    DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL,
-                    IrValueParameterSymbolImpl(it),
-                    name,
-                    newIndex,
-                    type,
-                    varargElementType,
-                    isCrossinline,
-                    isNoinline
-            ).apply {
-                it.bind(this)
-            }
-        }
-
         private fun buildConstructor() = WrappedClassConstructorDescriptor().let {
             IrConstructorImpl(
                     startOffset = startOffset,
@@ -262,7 +247,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                 returnType = functionReferenceClass.defaultType
 
                 boundFunctionParameters.forEachIndexed { index, parameter ->
-                    valueParameters += parameter.copy(index)
+                    valueParameters += parameter.copy(index, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL)
                 }
 
                 body = context.createIrBuilder(symbol, startOffset, endOffset).irBlockBody {
@@ -326,7 +311,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                 this.createDispatchReceiverParameter()
 
                 superFunction.valueParameters.forEachIndexed { index, parameter ->
-                    valueParameters += parameter.copy(index) // FIXME: substitute
+                    valueParameters += parameter.copy(index, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL) // FIXME: substitute
                 }
 
                 overriddenSymbols += superFunction.symbol
