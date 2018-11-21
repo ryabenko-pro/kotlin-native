@@ -247,7 +247,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                 returnType = functionReferenceClass.defaultType
 
                 boundFunctionParameters.forEachIndexed { index, parameter ->
-                    valueParameters += parameter.copy(index, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL)
+                    valueParameters += parameter.copy(startOffset, endOffset, index, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL)
                 }
 
                 body = context.createIrBuilder(symbol, startOffset, endOffset).irBlockBody {
@@ -311,7 +311,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                 this.createDispatchReceiverParameter()
 
                 superFunction.valueParameters.forEachIndexed { index, parameter ->
-                    valueParameters += parameter.copy(index, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL) // FIXME: substitute
+                    valueParameters += parameter.copy(startOffset, endOffset, index, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL) // FIXME: substitute
                 }
 
                 overriddenSymbols += superFunction.symbol
