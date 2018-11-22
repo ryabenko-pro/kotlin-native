@@ -1261,7 +1261,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
                     functionScope = locationInfo.scope,
                     diType        = element.descriptor.type.diType(context, codegen.llvmTargetData),
                     name          = element.descriptor.name,
-                    argNo         = element.index + 1,
+                    argNo         = if (element.isValueParameter) element.index else 0,
                     file          = file,
                     line          = locationInfo.line,
                     location      = location)
