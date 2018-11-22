@@ -8,8 +8,11 @@ package org.jetbrains.kotlin.backend.konan.lower
 import org.jetbrains.kotlin.backend.common.ClassLoweringPass
 import org.jetbrains.kotlin.backend.common.FileLoweringPass
 import org.jetbrains.kotlin.backend.common.deepCopyWithVariables
+import org.jetbrains.kotlin.backend.common.descriptors.WrappedClassConstructorDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedClassDescriptor
+import org.jetbrains.kotlin.backend.common.descriptors.WrappedValueParameterDescriptor
 import org.jetbrains.kotlin.backend.common.ir.buildSimpleDelegatingConstructor
+import org.jetbrains.kotlin.backend.common.ir.copy
 import org.jetbrains.kotlin.backend.common.lower.createIrBuilder
 import org.jetbrains.kotlin.backend.common.lower.irBlockBody
 import org.jetbrains.kotlin.backend.common.runOnFilePostfix
@@ -18,7 +21,6 @@ import org.jetbrains.kotlin.backend.konan.DECLARATION_ORIGIN_ENUM
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.konan.irasdescriptors.constructedClass
 import org.jetbrains.kotlin.descriptors.*
-import org.jetbrains.kotlin.descriptors.impl.ClassConstructorDescriptorImpl
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
@@ -29,6 +31,9 @@ import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrConstructorSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrClassSymbolImpl
+import org.jetbrains.kotlin.ir.symbols.impl.IrConstructorSymbolImpl
+import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
+import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classifierOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.*
@@ -503,59 +508,109 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             return loweredEnumConstructor
         }
 
-        private fun lowerEnumConstructor(enumConstructor: IrConstructor): IrConstructorImpl {
-            val loweredConstructorDescriptor = ClassConstructorDescriptorImpl.createSynthesized(
-                    enumConstructor.descriptor.containingDeclaration,
-                    enumConstructor.descriptor.annotations,
-                    enumConstructor.descriptor.isPrimary,
-                    enumConstructor.descriptor.source
-            )
-            val valueParameters =
-                    listOf(
-                            loweredConstructorDescriptor.createValueParameter(
-                                    0,
-                                    "name",
-                                    context.irBuiltIns.stringType,
-                                    enumConstructor.startOffset,
-                                    enumConstructor.endOffset
-                            ),
-                            loweredConstructorDescriptor.createValueParameter(
-                                    1,
-                                    "ordinal",
-                                    context.irBuiltIns.intType,
-                                    enumConstructor.startOffset,
-                                    enumConstructor.endOffset
-                            )
-                    ) +
-                            enumConstructor.valueParameters.map {
-                                val descriptor = it.descriptor as ValueParameterDescriptor
-                                val loweredValueParameterDescriptor = descriptor.copy(
-                                        loweredConstructorDescriptor,
-                                        it.name,
-                                        descriptor.loweredIndex()
-                                )
-                                loweredEnumConstructorParameters[descriptor] = loweredValueParameterDescriptor
-                                it.copy(loweredValueParameterDescriptor)
-                            }
-
-            loweredConstructorDescriptor.initialize(
-                    valueParameters.map { it.descriptor as ValueParameterDescriptor },
-                    Visibilities.PROTECTED
-            )
-            loweredConstructorDescriptor.returnType = enumConstructor.descriptor.returnType
-            val loweredEnumConstructor = IrConstructorImpl(
-                    enumConstructor.startOffset, enumConstructor.endOffset, enumConstructor.origin,
-                    loweredConstructorDescriptor
-            ).apply {
-                returnType = enumConstructor.returnType
-                body = enumConstructor.body!! // will be transformed later
+        private fun lowerEnumConstructor(constructor: IrConstructor): IrConstructorImpl {
+            val startOffset = constructor.startOffset
+            val endOffset = constructor.endOffset
+            val loweredConstructor = WrappedClassConstructorDescriptor(
+                    constructor.descriptor.annotations,
+                    constructor.descriptor.source
+            ).let {
+                IrConstructorImpl(
+                        startOffset, endOffset,
+                        constructor.origin,
+                        IrConstructorSymbolImpl(it),
+                        constructor.name,
+                        Visibilities.PROTECTED,
+                        false,
+                        false,
+                        constructor.isPrimary
+                ).apply {
+                    it.bind(this)
+                    parent = constructor.parent
+                    returnType = constructor.returnType
+                    body = constructor.body!! // Will be transformed later.
+                }
             }
-            loweredEnumConstructor.valueParameters += valueParameters
-            loweredEnumConstructor.parent = enumConstructor.parent
 
-            loweredEnumConstructors[enumConstructor] = loweredEnumConstructor
+            fun createSynthesizedValueParameter(index: Int, name: String, type: IrType) =
+                    WrappedValueParameterDescriptor().let {
+                        IrValueParameterImpl(
+                                startOffset, endOffset,
+                                DECLARATION_ORIGIN_ENUM,
+                                IrValueParameterSymbolImpl(it),
+                                Name.identifier(name),
+                                index,
+                                type,
+                                null,
+                                false,
+                                false
+                        ).apply {
+                            it.bind(this)
+                        }
+                    }
 
-            return loweredEnumConstructor
+            loweredConstructor.valueParameters += createSynthesizedValueParameter(0, "name", context.irBuiltIns.stringType)
+            loweredConstructor.valueParameters += createSynthesizedValueParameter(1, "ordinal", context.irBuiltIns.intType)
+            loweredConstructor.valueParameters += constructor.valueParameters.map {
+                it.copy(startOffset, endOffset, it.loweredIndex(), constructor.origin).apply {
+                    loweredEnumConstructorParameters[it.descriptor as ValueParameterDescriptor] = this.descriptor as ValueParameterDescriptor
+                }
+            }
+
+            loweredConstructor.valueParameters.forEach { it.parent = loweredConstructor }
+
+//            val loweredConstructorDescriptor = ClassConstructorDescriptorImpl.createSynthesized(
+//                    enumConstructor.descriptor.containingDeclaration,
+//                    enumConstructor.descriptor.annotations,
+//                    enumConstructor.descriptor.isPrimary,
+//                    enumConstructor.descriptor.source
+//            )
+//            val valueParameters =
+//                    listOf(
+//                            loweredConstructorDescriptor.createValueParameter(
+//                                    0,
+//                                    "name",
+//                                    context.irBuiltIns.stringType,
+//                                    enumConstructor.startOffset,
+//                                    enumConstructor.endOffset
+//                            ),
+//                            loweredConstructorDescriptor.createValueParameter(
+//                                    1,
+//                                    "ordinal",
+//                                    context.irBuiltIns.intType,
+//                                    enumConstructor.startOffset,
+//                                    enumConstructor.endOffset
+//                            )
+//                    ) +
+//                            enumConstructor.valueParameters.map {
+//                                val descriptor = it.descriptor as ValueParameterDescriptor
+//                                val loweredValueParameterDescriptor = descriptor.copy(
+//                                        loweredConstructorDescriptor,
+//                                        it.name,
+//                                        descriptor.loweredIndex()
+//                                )
+//                                loweredEnumConstructorParameters[descriptor] = loweredValueParameterDescriptor
+//                                it.copy(loweredValueParameterDescriptor)
+//                            }
+//
+//            loweredConstructorDescriptor.initialize(
+//                    valueParameters.map { it.descriptor as ValueParameterDescriptor },
+//                    Visibilities.PROTECTED
+//            )
+//            loweredConstructorDescriptor.returnType = enumConstructor.descriptor.returnType
+//            val loweredEnumConstructor = IrConstructorImpl(
+//                    enumConstructor.startOffset, enumConstructor.endOffset, enumConstructor.origin,
+//                    loweredConstructorDescriptor
+//            ).apply {
+//                returnType = enumConstructor.returnType
+//                body = enumConstructor.body!! // will be transformed later
+//            }
+//            loweredEnumConstructor.valueParameters += valueParameters
+//            loweredEnumConstructor.parent = enumConstructor.parent
+
+            loweredEnumConstructors[constructor] = loweredConstructor
+
+            return loweredConstructor
         }
 
         private fun lowerEnumClassBody(defaultClass: IrClass?) {
@@ -764,6 +819,7 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
 }
 
 private fun ValueParameterDescriptor.loweredIndex(): Int = index + 2
+private fun IrValueParameter.loweredIndex(): Int = index + 2
 
 private class ParameterMapper(superConstructor: IrConstructor, val constructor: IrConstructor) : IrElementTransformerVoid() {
     private val valueParameters = superConstructor.valueParameters.toSet()
