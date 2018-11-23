@@ -166,9 +166,8 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
     private inner class EnumClassTransformer(val irClass: IrClass) {
         private val loweredEnum = context.specialDeclarationsFactory.getLoweredEnum(irClass)
         private val loweredEnumConstructors = mutableMapOf<IrConstructor, IrConstructor>()
-        //private val descriptorToIrConstructorWithDefaultArguments = mutableMapOf<IrConstructor, IrConstructor>()
         private val defaultEnumEntryConstructors = mutableMapOf<IrConstructor, IrConstructor>()
-        private val loweredEnumConstructorParameters = mutableMapOf<ValueParameterDescriptor, ValueParameterDescriptor>()
+        private val loweredEnumConstructorParameters = mutableMapOf<IrValueParameter, IrValueParameter>()
         private val enumSyntheticFunctionsBuilder = EnumSyntheticFunctionsBuilder(context)
 
         fun run() {
@@ -176,7 +175,6 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             lowerEnumConstructors(irClass)
             lowerEnumEntriesClasses()
             val defaultClass = createDefaultClassForEnumEntries()
-            //println(ir2stringWhole(irClass))
             lowerEnumClassBody(defaultClass)
             createImplObject()
         }
@@ -224,26 +222,27 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
 
         private fun createDefaultClassForEnumEntries(): IrClass? {
             if (!irClass.declarations.any { it is IrEnumEntry && it.correspondingClass == null }) return null
-            val descriptor = WrappedClassDescriptor()
-            val defaultClass = IrClassImpl(
-                    irClass.startOffset, irClass.endOffset,
-                    DECLARATION_ORIGIN_ENUM,
-                    IrClassSymbolImpl(descriptor),
-                    "DEFAULT".synthesizedName,
-                    ClassKind.CLASS,
-                    Visibilities.PRIVATE,
-                    Modality.FINAL,
-                    false,
-                    false,
-                    false,
-                    false,
-                    false
-            )
-            descriptor.bind(defaultClass)
-            defaultClass.parent = irClass
-            irClass.declarations += defaultClass
-
-            defaultClass.createParameterDeclarations()
+            val defaultClass = WrappedClassDescriptor().let {
+                IrClassImpl(
+                        irClass.startOffset, irClass.endOffset,
+                        DECLARATION_ORIGIN_ENUM,
+                        IrClassSymbolImpl(it),
+                        "DEFAULT".synthesizedName,
+                        ClassKind.CLASS,
+                        Visibilities.PRIVATE,
+                        Modality.FINAL,
+                        false,
+                        false,
+                        false,
+                        false,
+                        false
+                ).apply {
+                    it.bind(this)
+                    parent = irClass
+                    irClass.declarations += this
+                    createParameterDeclarations()
+                }
+            }
 
             for (superConstructor in irClass.constructors) {
                 val constructor = defaultClass.buildSimpleDelegatingConstructor(superConstructor, context.irBuiltIns)
@@ -254,47 +253,9 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
                     val body = defaultValue.deepCopyWithVariables()
                     body.transformChildrenVoid(ParameterMapper(superConstructor, constructor))
                     body.patchDeclarationParents(constructor)
-                    //body.accept(SetDeclarationsParentVisitor, constructor)
                     parameter.defaultValue = body
                 }
             }
-//            val descriptor = irClass.descriptor
-//            val defaultClassDescriptor = ClassDescriptorImpl(descriptor, "DEFAULT".synthesizedName, Modality.FINAL,
-//                    ClassKind.CLASS, listOf(descriptor.defaultType), SourceElement.NO_SOURCE, false, LockBasedStorageManager.NO_LOCKS)
-//            val defaultClass = IrClassImpl(startOffset, endOffset, IrDeclarationOrigin.DEFINED, defaultClassDescriptor)
-//            defaultClass.createParameterDeclarations()
-//
-//
-//            val constructors = mutableSetOf<ClassConstructorDescriptor>()
-//
-//            descriptor.constructors.forEach {
-//                val loweredEnumIrConstructor = loweredEnumConstructors[it]!!
-//                val loweredEnumConstructor = loweredEnumIrConstructor.descriptor
-//
-//                val constructor = defaultClass.addSimpleDelegatingConstructor(
-//                        loweredEnumIrConstructor,
-//                        context.irBuiltIns,
-//                        DECLARATION_ORIGIN_ENUM
-//                )
-//
-//                val constructorDescriptor = constructor.descriptor
-//                constructors.add(constructorDescriptor)
-//                defaultEnumEntryConstructors.put(loweredEnumConstructor, constructor)
-//
-//                val irConstructor = descriptorToIrConstructorWithDefaultArguments[loweredEnumConstructor]
-//                if (irConstructor != null) {
-//                    it.valueParameters.filter { it.declaresDefaultValue() }.forEach { argument ->
-//                        val loweredArgument = loweredEnumConstructor.valueParameters[argument.loweredIndex()]
-//                        val body = irConstructor.getDefault(loweredArgument)!!.deepCopyWithVariables()
-//                        body.transformChildrenVoid(ParameterMapper(constructor))
-//                        body.accept(SetDeclarationsParentVisitor, constructor)
-//                        constructor.putDefault(constructorDescriptor.valueParameters[loweredArgument.index], body)
-//                    }
-//                }
-//            }
-//
-//            val memberScope = stub<MemberScope>("enum default class")
-//            defaultClassDescriptor.initialize(memberScope, constructors, null)
 
             defaultClass.superTypes += irClass.defaultType
             defaultClass.addFakeOverrides()
@@ -333,38 +294,42 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
                     ++i
             }
 
-            implObject.addChild(createSyntheticValuesPropertyDeclaration(enumEntries))
-            implObject.addChild(createValuesPropertyInitializer(enumEntries))
+            implObject.declarations += createSyntheticValuesPropertyDeclaration(enumEntries)
+            implObject.declarations += createValuesPropertyInitializer(enumEntries)
 
-            irClass.addChild(implObject)
+            irClass.declarations += implObject
         }
 
-        private val genericCreateUninitializedInstanceSymbol = context.ir.symbols.createUninitializedInstance
+        private val createUninitializedInstance = context.ir.symbols.createUninitializedInstance.owner
 
         private fun createSyntheticValuesPropertyDeclaration(enumEntries: List<IrEnumEntry>): IrPropertyImpl {
             val startOffset = irClass.startOffset
             val endOffset = irClass.endOffset
 
-            val irValuesInitializer = context.createArrayOfExpression(irClass.defaultType,
+            val irValuesInitializer = context.createArrayOfExpression(
+                    startOffset, endOffset,
+                    irClass.defaultType,
                     enumEntries
                             .sortedBy { it.descriptor.name }
                             .map {
                                 val initializer = it.initializerExpression
                                 val entryConstructorCall = when {
                                     initializer is IrCall -> initializer
+
                                     initializer is IrBlock && initializer.origin == ARGUMENTS_REORDERING_FOR_CALL ->
                                         initializer.statements.last() as IrCall
+
                                     else -> error("Unexpected initializer: $initializer")
                                 }
-                                val entryConstructor = entryConstructorCall.symbol.owner as IrConstructor
-                                val entryClass = entryConstructor.constructedClass
+                                val entryClass = (entryConstructorCall.symbol.owner as IrConstructor).constructedClass
 
                                 irCall(startOffset, endOffset,
-                                        genericCreateUninitializedInstanceSymbol.owner,
+                                        createUninitializedInstance,
                                         listOf(entryClass.defaultType)
                                 )
 
-                            }, startOffset, endOffset)
+                            }
+            )
             val irField = loweredEnum.valuesField.apply {
                 initializer = IrExpressionBodyImpl(startOffset, endOffset, irValuesInitializer)
             }
@@ -374,15 +339,13 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             val receiver = IrGetObjectValueImpl(startOffset, endOffset,
                     loweredEnum.implObject.defaultType, loweredEnum.implObject.symbol)
             val value = IrGetFieldImpl(
-                    startOffset,
-                    endOffset,
+                    startOffset, endOffset,
                     loweredEnum.valuesField.symbol,
                     loweredEnum.valuesField.type,
                     receiver
             )
             val returnStatement = IrReturnImpl(
-                    startOffset,
-                    endOffset,
+                    startOffset, endOffset,
                     context.irBuiltIns.nothingType,
                     loweredEnum.valuesGetter.symbol,
                     value
@@ -390,8 +353,8 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             getter.body = IrBlockBodyImpl(startOffset, endOffset, listOf(returnStatement))
 
             return IrPropertyImpl(startOffset, endOffset, DECLARATION_ORIGIN_ENUM,
-                    false, loweredEnum.valuesField.descriptor, irField, getter, null).also {
-                it.parent = loweredEnum.implObject
+                    false, loweredEnum.valuesField.descriptor, irField, getter, null).apply {
+                parent = loweredEnum.implObject
             }
         }
 
@@ -411,9 +374,13 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
                         putValueArgument(1, constructor)
                     }
 
-            return IrAnonymousInitializerImpl(startOffset, endOffset, DECLARATION_ORIGIN_ENUM, loweredEnum.implObject.descriptor).apply {
+            return IrAnonymousInitializerImpl(
+                    startOffset, endOffset,
+                    DECLARATION_ORIGIN_ENUM,
+                    loweredEnum.implObject.descriptor).apply {
                 body = context.createIrBuilder(symbol, startOffset, endOffset).irBlockBody(irClass) {
-                    val instances = irTemporary(irGetField(irGet(loweredEnum.implObject.thisReceiver!!), loweredEnum.valuesField))
+                    val receiver = loweredEnum.implObject.thisReceiver!!
+                    val instances = irTemporary(irGetField(irGet(receiver), loweredEnum.valuesField))
                     enumEntries
                             .sortedBy { it.descriptor.name }
                             .withIndex()
@@ -425,17 +392,19 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
                                 val initializer = it.value.initializerExpression!!
                                 when {
                                     initializer is IrCall -> +initInstanceCall(instance, initializer)
+
                                     initializer is IrBlock && initializer.origin == ARGUMENTS_REORDERING_FOR_CALL -> {
                                         val statements = initializer.statements
                                         val constructorCall = statements.last() as IrCall
                                         statements[statements.lastIndex] = initInstanceCall(instance, constructorCall)
                                         +initializer
                                     }
+
                                     else -> error("Unexpected initializer: $initializer")
                                 }
                             }
                     +irCall(this@EnumClassLowering.context.ir.symbols.freeze, listOf(arrayType)).apply {
-                        extensionReceiver = irGet(loweredEnum.implObject.thisReceiver!!)
+                        extensionReceiver = irGet(receiver)
                     }
                 }
             }
@@ -485,26 +454,30 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
         private fun transformEnumConstructor(enumConstructor: IrConstructor): IrConstructor {
             val loweredEnumConstructor = lowerEnumConstructor(enumConstructor)
 
-            enumConstructor.descriptor.valueParameters.filter { it.declaresDefaultValue() }.forEach {
-                val body = enumConstructor.getDefault(it)!!
-                body.transformChildrenVoid(object: IrElementTransformerVoid() {
-                    override fun visitGetValue(expression: IrGetValue): IrExpression {
-                        val descriptor = expression.descriptor
-                        when (descriptor) {
-                            is ValueParameterDescriptor -> {
-                                val parameter = loweredEnumConstructor.valueParameters[descriptor.loweredIndex()]
-                                return IrGetValueImpl(expression.startOffset,
-                                        expression.endOffset,
-                                        parameter.type,
-                                        parameter.symbol)
-                            }
-                        }
-                        return expression
-                    }
-                })
-                loweredEnumConstructor.valueParameters[it.loweredIndex()].defaultValue = body
-                //descriptorToIrConstructorWithDefaultArguments[loweredEnumConstructor] = loweredEnumConstructor
+            for (parameter in enumConstructor.valueParameters) {
+                val defaultValue = parameter.defaultValue ?: continue
+                loweredEnumConstructor.valueParameters[parameter.loweredIndex()].defaultValue = defaultValue
             }
+
+//            enumConstructor.descriptor.valueParameters.filter { it.declaresDefaultValue() }.forEach {
+//                val body = enumConstructor.getDefault(it)!!
+//                body.transformChildrenVoid(object: IrElementTransformerVoid() {
+//                    override fun visitGetValue(expression: IrGetValue): IrExpression {
+//                        val descriptor = expression.descriptor
+//                        when (descriptor) {
+//                            is ValueParameterDescriptor -> {
+//                                val parameter = loweredEnumConstructor.valueParameters[descriptor.loweredIndex()]
+//                                return IrGetValueImpl(expression.startOffset,
+//                                        expression.endOffset,
+//                                        parameter.type,
+//                                        parameter.symbol)
+//                            }
+//                        }
+//                        return expression
+//                    }
+//                })
+//                loweredEnumConstructor.valueParameters[it.loweredIndex()].defaultValue = body
+//            }
             return loweredEnumConstructor
         }
 
@@ -553,60 +526,11 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             loweredConstructor.valueParameters += createSynthesizedValueParameter(1, "ordinal", context.irBuiltIns.intType)
             loweredConstructor.valueParameters += constructor.valueParameters.map {
                 it.copy(startOffset, endOffset, it.loweredIndex(), constructor.origin).apply {
-                    loweredEnumConstructorParameters[it.descriptor as ValueParameterDescriptor] = this.descriptor as ValueParameterDescriptor
+                    loweredEnumConstructorParameters[it] = this
                 }
             }
 
             loweredConstructor.valueParameters.forEach { it.parent = loweredConstructor }
-
-//            val loweredConstructorDescriptor = ClassConstructorDescriptorImpl.createSynthesized(
-//                    enumConstructor.descriptor.containingDeclaration,
-//                    enumConstructor.descriptor.annotations,
-//                    enumConstructor.descriptor.isPrimary,
-//                    enumConstructor.descriptor.source
-//            )
-//            val valueParameters =
-//                    listOf(
-//                            loweredConstructorDescriptor.createValueParameter(
-//                                    0,
-//                                    "name",
-//                                    context.irBuiltIns.stringType,
-//                                    enumConstructor.startOffset,
-//                                    enumConstructor.endOffset
-//                            ),
-//                            loweredConstructorDescriptor.createValueParameter(
-//                                    1,
-//                                    "ordinal",
-//                                    context.irBuiltIns.intType,
-//                                    enumConstructor.startOffset,
-//                                    enumConstructor.endOffset
-//                            )
-//                    ) +
-//                            enumConstructor.valueParameters.map {
-//                                val descriptor = it.descriptor as ValueParameterDescriptor
-//                                val loweredValueParameterDescriptor = descriptor.copy(
-//                                        loweredConstructorDescriptor,
-//                                        it.name,
-//                                        descriptor.loweredIndex()
-//                                )
-//                                loweredEnumConstructorParameters[descriptor] = loweredValueParameterDescriptor
-//                                it.copy(loweredValueParameterDescriptor)
-//                            }
-//
-//            loweredConstructorDescriptor.initialize(
-//                    valueParameters.map { it.descriptor as ValueParameterDescriptor },
-//                    Visibilities.PROTECTED
-//            )
-//            loweredConstructorDescriptor.returnType = enumConstructor.descriptor.returnType
-//            val loweredEnumConstructor = IrConstructorImpl(
-//                    enumConstructor.startOffset, enumConstructor.endOffset, enumConstructor.origin,
-//                    loweredConstructorDescriptor
-//            ).apply {
-//                returnType = enumConstructor.returnType
-//                body = enumConstructor.body!! // will be transformed later
-//            }
-//            loweredEnumConstructor.valueParameters += valueParameters
-//            loweredEnumConstructor.parent = enumConstructor.parent
 
             loweredEnumConstructors[constructor] = loweredConstructor
 
@@ -802,16 +726,14 @@ internal class EnumClassLowering(val context: Context) : ClassLoweringPass {
             }
 
             override fun visitGetValue(expression: IrGetValue): IrExpression {
-                val loweredParameter = loweredEnumConstructorParameters[expression.descriptor]
+                val parameter = expression.symbol.owner
+                val loweredParameter = loweredEnumConstructorParameters[parameter]
                 return if (loweredParameter == null) {
                     expression
                 } else {
                     //val loweredEnumConstructor = loweredEnumConstructors[expression.descriptor.containingDeclaration]!!
-                    val loweredEnumConstructor = loweredEnumConstructors[expression.symbol.owner.parent as IrConstructor]!!
-                    val loweredIrParameter = loweredEnumConstructor.valueParameters[loweredParameter.index]
-                    assert(loweredIrParameter.descriptor == loweredParameter)
-                    IrGetValueImpl(expression.startOffset, expression.endOffset, loweredIrParameter.type,
-                            loweredIrParameter.symbol, expression.origin)
+                    IrGetValueImpl(expression.startOffset, expression.endOffset, loweredParameter.type,
+                            loweredParameter.symbol, expression.origin)
                 }
             }
         }
