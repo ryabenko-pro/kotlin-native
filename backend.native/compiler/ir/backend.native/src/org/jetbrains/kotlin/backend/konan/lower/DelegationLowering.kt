@@ -188,7 +188,7 @@ internal class PropertyDelegationLowering(val context: Context) : FileLoweringPa
             // TODO: move to object for lazy initialization.
             irFile.declarations.add(0, kPropertiesField.apply {
                 initializer = IrExpressionBodyImpl(UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-                        context.createArrayOfExpression(kPropertyImplType, initializers, UNDEFINED_OFFSET, UNDEFINED_OFFSET))
+                        context.createArrayOfExpression(UNDEFINED_OFFSET, UNDEFINED_OFFSET, kPropertyImplType, initializers))
             })
 
             kPropertiesField.parent = irFile

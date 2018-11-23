@@ -628,9 +628,9 @@ fun ReferenceSymbolTable.translateErased(type: KotlinType): IrSimpleType {
 }
 
 fun CommonBackendContext.createArrayOfExpression(
+        startOffset: Int, endOffset: Int,
         arrayElementType: IrType,
-        arrayElements: List<IrExpression>,
-        startOffset: Int, endOffset: Int
+        arrayElements: List<IrExpression>
 ): IrExpression {
 
     val arrayType = ir.symbols.array.typeWith(arrayElementType)
