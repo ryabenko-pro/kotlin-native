@@ -21,11 +21,10 @@ First, download dependencies:
 
 	./gradlew dependencies:update
 
-Then, build the compiler and libraries:
+Then, build the compiler and libraries (The build can take about an hour on a Macbook Pro. Shorter option below.):
 
 	./gradlew bundle
 
-The build can take about an hour on a Macbook Pro.
 To run a shorter build with only the host compiler and libraries, run:
 
     ./gradlew dist distPlatformLibs
